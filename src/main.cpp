@@ -11,16 +11,18 @@ namespace {
 
 void usage(const char* argv0) {
   std::cerr
-      << "bpez — byte-level BPE tokenizer\n\n"
+      << "bpez — byte-level BPE tokenizer (GPT-2 pre-tokenization + special tokens)\n\n"
       << "Usage:\n"
-      << "  " << argv0 << " train  --input <file> --model <path> --vocab-size <N>\n"
+      << "  " << argv0
+      << " train  --input <file> --model <path> --vocab-size <N> [--special <tok>]...\n"
       << "  " << argv0 << " encode --model <path> [--input <file>] [--output <file>]\n"
       << "  " << argv0 << " decode --model <path> [--input <file>] [--output <file>]\n\n"
       << "Notes:\n"
-      << "  • All I/O is raw bytes (not text encodings).\n"
-      << "  • encode reads bytes and writes space-separated token ids (text line).\n"
-      << "  • decode reads space-separated token ids and writes raw bytes.\n"
-      << "  • If --input/--output omitted for encode/decode, stdin/stdout are used.\n";
+      << "  • Pre-tokenizes with GPT-2 rules (Unicode \\p{L}/\\p{N}, incl. Turkish/accented).\n"
+      << "  • BPE runs independently inside each pre-token chunk.\n"
+      << "  • Default special token: <|endoftext|>. Pass --special '' to disable, or\n"
+      << "    repeat --special for multiple. Use --no-special for none.\n"
+      << "  • encode writes space-separated token ids; decode writes raw bytes.\n";
 }
 
 std::string read_all(std::istream& in) {
@@ -57,6 +59,16 @@ std::string get_opt(int argc, char** argv, const std::string& name) {
   return {};
 }
 
+std::vector<std::string> get_opt_all(int argc, char** argv, const std::string& name) {
+  std::vector<std::string> out;
+  for (int i = 0; i < argc - 1; ++i) {
+    if (name == argv[i]) {
+      out.emplace_back(argv[i + 1]);
+    }
+  }
+  return out;
+}
+
 bool has_flag(int argc, char** argv, const std::string& name) {
   for (int i = 0; i < argc; ++i) {
     if (name == argv[i]) {
@@ -76,11 +88,22 @@ int cmd_train(int argc, char** argv) {
   }
   const int vocab_size = std::stoi(vs_s);
   const std::string text = read_file(input);
+
+  std::vector<std::string> specials;
+  if (has_flag(argc, argv, "--no-special")) {
+    specials.clear();
+  } else {
+    specials = get_opt_all(argc, argv, "--special");
+    if (specials.empty()) {
+      specials.push_back("<|endoftext|>");
+    }
+  }
+
   bpez::BPE tok;
-  tok.train(text, vocab_size);
+  tok.train(text, vocab_size, specials);
   tok.save(model);
   std::cerr << "trained vocab_size=" << tok.vocab_size() << " merges=" << tok.merges().size()
-            << " -> " << model << "\n";
+            << " specials=" << tok.special_tokens().size() << " -> " << model << "\n";
   return 0;
 }
 
@@ -154,8 +177,6 @@ int main(int argc, char** argv) {
 
   try {
     const std::string cmd = argv[1];
-    // Shift so get_opt sees flags after the subcommand; keep argv[0] for usage.
-    // We pass full argc/argv but commands look for flags anywhere.
     if (cmd == "train") {
       return cmd_train(argc, argv);
     }

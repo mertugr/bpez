@@ -1,14 +1,18 @@
 # bpez
 
-Byte-level BPE (Byte Pair Encoding) tokenizer in C++17.
+Byte-level BPE (Byte Pair Encoding) tokenizer in C++17, with **GPT-2-style pre-tokenization** and **special tokens**.
 
 ## Features
 
-- **Library** (`bpez::BPE`): `train(text, vocab_size)`, `encode(text)`, `decode(ids)`
+- **Library** (`bpez::BPE`): `train`, `encode`, `decode`, `pretokenize`
 - **CLI** (`bpez`): `train`, `encode`, `decode`
-- Operates on **raw bytes** (not Unicode code points / `char` semantics)
-- Invariant: **`decode(encode(x)) == x`** for any input byte sequence `x`
-- Base vocabulary is always the 256 byte values (`0..255`); merges grow the vocab
+- **GPT-2 pre-tokenization** before BPE (Unicode `\p{L}` / `\p{N}`, not ASCII-only)
+  - Turkish / accented letters stay in the same word piece: `çağdaş`, `İstanbul`, `ışık`, `öğrenci`, `naïve`, …
+- **BPE runs independently inside each pre-token chunk** (no merges across boundaries)
+- **Special tokens** (default `<|endoftext|>`) are atomic — never split or merge-trained
+- Operates on **raw bytes**; invariant: **`decode(encode(x)) == x`**
+
+Vocabulary layout: `0..255` bytes → learned merges → special tokens.
 
 ## Build
 
@@ -18,34 +22,39 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-Binaries: `build/bpez`, `build/bpez_tests`
-
 ## CLI
 
 ```bash
-# Train a model (vocab_size includes the 256 base byte tokens)
+# Train (default special: <|endoftext|>)
 ./build/bpez train --input corpus.txt --model model.bpez --vocab-size 512
 
-# Encode bytes → space-separated token ids
-./build/bpez encode --model model.bpez --input sample.txt --output ids.txt
-# or pipe:
-printf 'hello' | ./build/bpez encode --model model.bpez
+# Custom specials
+./build/bpez train --input corpus.txt --model model.bpez --vocab-size 512 \
+  --special '<|endoftext|>' --special '<|user|>'
 
-# Decode token ids → raw bytes
-./build/bpez decode --model model.bpez --input ids.txt --output out.bin
+# No special tokens
+./build/bpez train --input corpus.txt --model model.bpez --vocab-size 512 --no-special
+
+./build/bpez encode --model model.bpez --input sample.txt
+./build/bpez decode --model model.bpez --input ids.txt
 ```
 
-## Library usage
+## Library
 
 ```cpp
 #include "bpez/bpe.hpp"
 
 bpez::BPE tok;
-tok.train(training_bytes, /*vocab_size=*/512);
-auto ids = tok.encode(input_bytes);
-std::string out = tok.decode(ids);  // out == input_bytes
-tok.save("model.bpez");
-tok.load("model.bpez");
+tok.train(training_bytes, 512, {"<|endoftext|>", "<|user|>"});
+auto chunks = tok.pretokenize("çağdaş ışık");  // GPT-2 chunks
+auto ids = tok.encode("hi<|endoftext|>");
+std::string out = tok.decode(ids);  // out == input bytes
+```
+
+Pre-tokenizer pattern (GPT-2 / tiktoken style):
+
+```
+'s|'t|'re|'ve|'m|'ll|'d | ?\p{L}+ | ?\p{N}+ | ?[^\s\p{L}\p{N}]+ | \s+(?!\S) | \s+
 ```
 
 ## License
