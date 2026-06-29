@@ -324,17 +324,6 @@ bool is_space(char32_t cp, bool valid_utf8) {
          cp == 0x2029 || cp == 0x202F || cp == 0x205F || cp == 0x3000;
 }
 
-// Peek codepoint without mutating for "next is non-space" checks — re-scan from index.
-bool next_is_non_space(std::string_view s, std::size_t i) {
-  if (i >= s.size()) {
-    return false;
-  }
-  char32_t cp = 0;
-  unsigned char raw = 0;
-  const bool ok = utf8_next(s, i, cp, raw);
-  return !is_space(cp, ok);
-}
-
 // GPT-2 contraction suffixes after an apostrophe (case-sensitive ASCII, as in GPT-2).
 bool match_contraction(std::string_view s, std::size_t i, std::size_t& len) {
   if (i >= s.size() || s[i] != '\'') {
@@ -431,10 +420,22 @@ bool match_opt_space_other(std::string_view s, std::size_t i, std::size_t& len) 
   return true;
 }
 
-// \s+(?!\S) — whitespace run at end of string or only whitespace remaining
-bool match_trailing_space(std::string_view s, std::size_t i, std::size_t& len) {
+// \s+(?!\S) with Python/PCRE greedy + backtracking semantics (GPT-2 / tiktoken).
+//
+// Greedy `\s+` then `(?!\S)`: if the full whitespace run is followed by a
+// non-space (e.g. "  b"), the engine backtracks one code point so the lookahead
+// sees whitespace instead. Effectively:
+//   - trailing whitespace (run to EOS) → match the whole run
+//   - run of n>=2 whitespace before non-space → match n-1 (leaves one space for
+//     the following ` ?\p{L}+` / etc., yielding ['a', ' ', ' b'] for "a  b")
+//   - single whitespace before non-space → fail (fall through to `\s+`)
+//
+// Wrong (old) behavior matched the entire run only when not followed by
+// non-space at all, which produced ['a', '  ', 'b'] for "a  b".
+bool match_ws_not_before_nonspace(std::string_view s, std::size_t i, std::size_t& len) {
   std::size_t k = i;
-  bool any = false;
+  std::size_t n_cp = 0;
+  std::size_t end_before_last_cp = i;  // exclusive end of the (n_cp-1)-th CP
   while (k < s.size()) {
     const std::size_t before = k;
     char32_t cp = 0;
@@ -444,19 +445,29 @@ bool match_trailing_space(std::string_view s, std::size_t i, std::size_t& len) {
       k = before;
       break;
     }
-    any = true;
+    if (n_cp >= 1) {
+      end_before_last_cp = before;
+    }
+    ++n_cp;
   }
-  if (!any) {
+  if (n_cp == 0) {
     return false;
   }
-  // (?!\S) — not followed by non-space (i.e. at end or only spaces left — already consumed all spaces)
-  if (next_is_non_space(s, k)) {
+  if (k >= s.size()) {
+    // Trailing whitespace: greedy match succeeds with full run.
+    len = k - i;
+    return true;
+  }
+  // Full run is followed by non-space. Backtrack one code point (like Python).
+  if (n_cp < 2) {
     return false;
   }
-  len = k - i;
-  return true;
+  len = end_before_last_cp - i;
+  return len > 0;
 }
 
+// Fallback `\s+` — greedy whitespace run (used when `\s+(?!\S)` fails, typically
+// a single whitespace char before non-space that is not ASCII ' ' for ` ?\p{L}+`).
 bool match_whitespace(std::string_view s, std::size_t i, std::size_t& len) {
   std::size_t k = i;
   bool any = false;
@@ -563,7 +574,7 @@ std::vector<std::string> gpt2_pretokenize(std::string_view text) {
     // 's|'t|'re|'ve|'m|'ll|'d | ?\p{L}+ | ?\p{N}+ | ?[^\s\p{L}\p{N}]+ | \s+(?!\S) | \s+
     if (match_contraction(text, i, len) || match_opt_space_letters(text, i, len) ||
         match_opt_space_numbers(text, i, len) || match_opt_space_other(text, i, len) ||
-        match_trailing_space(text, i, len) || match_whitespace(text, i, len)) {
+        match_ws_not_before_nonspace(text, i, len) || match_whitespace(text, i, len)) {
       out.emplace_back(text.substr(i, len));
       i += len;
       continue;

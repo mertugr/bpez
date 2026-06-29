@@ -155,6 +155,67 @@ void test_gpt2_pretokenize_basic() {
   CHECK(contraction[1] == "'t");
 }
 
+void test_gpt2_whitespace_matches_reference() {
+  // GPT-2 / tiktoken: multi-space between words uses `\s+(?!\S)` backtracking so
+  // one space (or n-1 of a run) is its own chunk and the last space joins the
+  // following word via ` ?\p{L}+`. Reference: "a  b" -> ['a', ' ', ' b']
+  // (we previously wrongly emitted ['a', '  ', 'b']).
+  {
+    const auto p = bpez::gpt2_pretokenize("a  b");
+    CHECK(p.size() == 3);
+    CHECK(p[0] == "a");
+    CHECK(p[1] == " ");
+    CHECK(p[2] == " b");
+  }
+  {
+    const auto p = bpez::gpt2_pretokenize("a   b");
+    CHECK(p.size() == 3);
+    CHECK(p[0] == "a");
+    CHECK(p[1] == "  ");
+    CHECK(p[2] == " b");
+  }
+  {
+    const auto p = bpez::gpt2_pretokenize("a b");
+    CHECK(p.size() == 2);
+    CHECK(p[0] == "a");
+    CHECK(p[1] == " b");
+  }
+  {
+    const auto p = bpez::gpt2_pretokenize("a ");
+    CHECK(p.size() == 2);
+    CHECK(p[0] == "a");
+    CHECK(p[1] == " ");
+  }
+  {
+    const auto p = bpez::gpt2_pretokenize("a  ");
+    CHECK(p.size() == 2);
+    CHECK(p[0] == "a");
+    CHECK(p[1] == "  ");
+  }
+  {
+    const auto p = bpez::gpt2_pretokenize("  b");
+    CHECK(p.size() == 2);
+    CHECK(p[0] == " ");
+    CHECK(p[1] == " b");
+  }
+  {
+    const auto p = bpez::gpt2_pretokenize("hello  world");
+    CHECK(p.size() == 3);
+    CHECK(p[0] == "hello");
+    CHECK(p[1] == " ");
+    CHECK(p[2] == " world");
+  }
+  // Tabs: optional space in ` ?\p{L}+` is only ASCII ' ', so each tab splits.
+  {
+    const auto p = bpez::gpt2_pretokenize("a\t\tb");
+    CHECK(p.size() == 4);
+    CHECK(p[0] == "a");
+    CHECK(p[1] == "\t");
+    CHECK(p[2] == "\t");
+    CHECK(p[3] == "b");
+  }
+}
+
 void test_turkish_and_accented_letters_same_chunk() {
   // Non-ASCII letters must stay in the same \p{L}+ run (not split as "other").
   const auto tr = bpez::gpt2_pretokenize("çağdaş");
@@ -252,6 +313,7 @@ int main() {
   test_save_load_roundtrip();
   test_decode_encode_property_randomish();
   test_gpt2_pretokenize_basic();
+  test_gpt2_whitespace_matches_reference();
   test_turkish_and_accented_letters_same_chunk();
   test_special_tokens_atomic();
   test_bpe_independent_per_chunk();
