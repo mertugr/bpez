@@ -1,0 +1,8 @@
+build/
+cmake-build-*/
+*.bpez
+.DS_Store
+.idea/
+.vscode/
+*.o
+*.a
